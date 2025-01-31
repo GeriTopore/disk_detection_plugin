@@ -1,9 +1,0 @@
-README.md
-pyproject.toml
-src/interactive_disk_detection.egg-info/PKG-INFO
-src/interactive_disk_detection.egg-info/SOURCES.txt
-src/interactive_disk_detection.egg-info/dependency_links.txt
-src/interactive_disk_detection.egg-info/requires.txt
-src/interactive_disk_detection.egg-info/top_level.txt
-src/py4d_browser_plugin/__init__.py
-src/py4d_browser_plugin/interactive_disk_detect.py
