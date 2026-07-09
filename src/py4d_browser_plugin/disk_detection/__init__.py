@@ -1,1 +1,1 @@
-from .disk_detection import KernelPlugin
+from .disk_detection import DiskDetectionPlugin

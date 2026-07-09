@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "interactive_disk_detection"
-version = "0.1"
+version = "0.2"
 authors = [{ name = "Geri Topore", email = "g.topore22@imperial.ac.uk" }]
 description = "Enables disk detection within py4d_browser"
 readme = "README.md"
@@ -13,7 +13,14 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
-dependencies = ["py4dstem >= 0.14.9", "numpy >= 1.19"]
+dependencies = [
+    "py4D_browser",
+    "py4dstem >= 0.14.9",
+    "numpy >= 1.19",
+    "scipy",
+    "pyqtgraph >= 0.11",
+    "PyQt5 >= 5.10",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/GeriTopore/disk_detection_plugin"
