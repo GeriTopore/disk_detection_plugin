@@ -1,4 +1,3 @@
-import time
 from functools import partial
 
 import numpy as np
@@ -242,13 +241,6 @@ class BraggDiskTab(QWidget):
         self.find_all_progress = QProgressBar()
         self.find_all_progress.setVisible(False)
 
-        # macOS's native progress bar style doesn't render setFormat() text
-        # at all (a known Qt/Cocoa limitation), so show the ETA in its own
-        # label instead of relying on the progress bar's own text, which is
-        # reliable cross-platform.
-        self.find_all_eta_label = QLabel("")
-        self.find_all_eta_label.setVisible(False)
-
         self.add_pane_button = QPushButton("Add Preview Position")
         self.add_pane_button.clicked.connect(self.add_pane)
 
@@ -263,7 +255,6 @@ class BraggDiskTab(QWidget):
         left_layout.addWidget(scaling_box)
         left_layout.addWidget(self.find_all_button)
         left_layout.addWidget(self.find_all_progress)
-        left_layout.addWidget(self.find_all_eta_label)
         left_layout.addWidget(self.add_pane_button)
         left_layout.addWidget(self.live_update_checkbox)
         left_layout.addStretch()
@@ -419,17 +410,6 @@ class BraggDiskTab(QWidget):
             if pane.last_dp is not None:
                 pane.update_dp(pane.last_dp, scale_fn, relevel=True)
 
-    @staticmethod
-    def _format_duration(seconds):
-        seconds = max(0, int(round(seconds)))
-        hours, seconds = divmod(seconds, 3600)
-        minutes, seconds = divmod(seconds, 60)
-        if hours:
-            return f"{hours}h {minutes}m"
-        if minutes:
-            return f"{minutes}m {seconds}s"
-        return f"{seconds}s"
-
     def find_all(self):
         parent = self.window.parent
         probe = self.window.probe
@@ -449,19 +429,15 @@ class BraggDiskTab(QWidget):
         # single-position call the preview panes already use) and assemble
         # the results into a BraggVectors object by hand, using only public
         # py4DSTEM API (PointListArray / set_raw_vectors).
-        total = R_Nx * R_Ny
         self.find_all_button.setEnabled(False)
         self.find_all_progress.setMinimum(0)
-        self.find_all_progress.setMaximum(total)
+        self.find_all_progress.setMaximum(R_Nx * R_Ny)
         self.find_all_progress.setValue(0)
         self.find_all_progress.setVisible(True)
-        self.find_all_eta_label.setText("Estimating time remaining...")
-        self.find_all_eta_label.setVisible(True)
         parent.statusBar().showMessage("Running disk detection on the full dataset...")
 
         pla = None
         count = 0
-        start_time = time.monotonic()
         try:
             for rx in range(R_Nx):
                 for ry in range(R_Ny):
@@ -476,11 +452,6 @@ class BraggDiskTab(QWidget):
 
                     count += 1
                     self.find_all_progress.setValue(count)
-                    elapsed = time.monotonic() - start_time
-                    remaining = elapsed / count * (total - count)
-                    self.find_all_eta_label.setText(
-                        f"{self._format_duration(remaining)} remaining"
-                    )
                     parent.qtapp.processEvents()
 
             braggvectors = py4DSTEM.BraggVectors(datacube.Rshape, datacube.Qshape)
@@ -493,12 +464,10 @@ class BraggDiskTab(QWidget):
         except Exception as exc:
             parent.statusBar().showMessage(f"Disk detection failed: {exc}", 5_000)
             self.find_all_progress.setVisible(False)
-            self.find_all_eta_label.setVisible(False)
             self.find_all_button.setEnabled(True)
             raise
 
         self.find_all_progress.setVisible(False)
-        self.find_all_eta_label.setVisible(False)
         self.find_all_button.setEnabled(True)
         parent.statusBar().showMessage(
             "Disk detection complete. Choose where to save the results...", 5_000
