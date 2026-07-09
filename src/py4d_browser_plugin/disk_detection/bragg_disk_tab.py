@@ -48,12 +48,12 @@ class BraggDiskSettingsPane(QGroupBox):
 
         self.sigma_cc_spin = QDoubleSpinBox()
         self.sigma_cc_spin.setRange(0.0, 100.0)
-        self.sigma_cc_spin.setValue(2.0)
+        self.sigma_cc_spin.setValue(0.0)
         form.addRow("Correlation Smoothing Sigma", self.sigma_cc_spin)
 
         self.subpixel_combo = QComboBox()
         self.subpixel_combo.addItems(["pixel", "poly", "multicorr"])
-        self.subpixel_combo.setCurrentText("multicorr")
+        self.subpixel_combo.setCurrentText("poly")
         form.addRow("Subpixel Mode", self.subpixel_combo)
 
         self.upsample_factor_spin = QSpinBox()
@@ -64,6 +64,7 @@ class BraggDiskSettingsPane(QGroupBox):
         self.min_abs_intensity_spin = QDoubleSpinBox()
         self.min_abs_intensity_spin.setRange(0.0, 1e6)
         self.min_abs_intensity_spin.setDecimals(4)
+        self.min_abs_intensity_spin.setSingleStep(0.1)
         self.min_abs_intensity_spin.setValue(0.0)
         form.addRow("Minimum Absolute Intensity", self.min_abs_intensity_spin)
 
@@ -71,7 +72,7 @@ class BraggDiskSettingsPane(QGroupBox):
         self.min_rel_intensity_spin.setRange(0.0, 1.0)
         self.min_rel_intensity_spin.setDecimals(5)
         self.min_rel_intensity_spin.setSingleStep(0.001)
-        self.min_rel_intensity_spin.setValue(0.005)
+        self.min_rel_intensity_spin.setValue(0.0)
         form.addRow("Minimum Relative Intensity", self.min_rel_intensity_spin)
 
         self.relative_to_peak_spin = QSpinBox()
@@ -86,7 +87,7 @@ class BraggDiskSettingsPane(QGroupBox):
 
         self.edge_boundary_spin = QSpinBox()
         self.edge_boundary_spin.setRange(0, 1000)
-        self.edge_boundary_spin.setValue(20)
+        self.edge_boundary_spin.setValue(0)
         form.addRow("Edge Boundary (px)", self.edge_boundary_spin)
 
         self.max_num_peaks_spin = QSpinBox()
