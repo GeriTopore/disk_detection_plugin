@@ -11,6 +11,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+.claude/
 #py4DSTEM/sample_code/
 py4DSTEM/test/testdata/
 sample_code/data/*h5
