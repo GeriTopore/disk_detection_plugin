@@ -2,6 +2,7 @@ from functools import partial
 
 import numpy as np
 import pyqtgraph as pg
+import py4DSTEM
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -11,6 +12,7 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QSpinBox,
@@ -236,6 +238,9 @@ class BraggDiskTab(QWidget):
         self.find_all_button = QPushButton("Find All Bragg Disks")
         self.find_all_button.clicked.connect(self.find_all)
 
+        self.find_all_progress = QProgressBar()
+        self.find_all_progress.setVisible(False)
+
         self.add_pane_button = QPushButton("Add Preview Position")
         self.add_pane_button.clicked.connect(self.add_pane)
 
@@ -249,6 +254,7 @@ class BraggDiskTab(QWidget):
         left_layout.addWidget(self.settings_pane)
         left_layout.addWidget(scaling_box)
         left_layout.addWidget(self.find_all_button)
+        left_layout.addWidget(self.find_all_progress)
         left_layout.addWidget(self.add_pane_button)
         left_layout.addWidget(self.live_update_checkbox)
         left_layout.addStretch()
@@ -414,21 +420,82 @@ class BraggDiskTab(QWidget):
             return
 
         params = self.settings_pane.get_params()
+        datacube = parent.datacube
+        R_Nx, R_Ny = datacube.R_Nx, datacube.R_Ny
 
-        parent.statusBar().showMessage(
-            "Running disk detection on the full dataset... "
-            "(this may take a while; see console for progress)"
-        )
-        parent.qtapp.processEvents()
+        # find_Bragg_disks(data=None) runs the whole dataset internally with
+        # no way to hook a Qt progress bar into its console-only tqdm loop,
+        # so loop over scan positions ourselves (via the same sanctioned
+        # single-position call the preview panes already use) and assemble
+        # the results into a BraggVectors object by hand, using only public
+        # py4DSTEM API (PointListArray / set_raw_vectors).
+        self.find_all_button.setEnabled(False)
+        self.find_all_progress.setMinimum(0)
+        self.find_all_progress.setMaximum(R_Nx * R_Ny)
+        self.find_all_progress.setValue(0)
+        self.find_all_progress.setVisible(True)
+        parent.statusBar().showMessage("Running disk detection on the full dataset...")
 
+        pla = None
+        count = 0
         try:
-            parent.datacube.find_Bragg_disks(template=probe.kernel, data=None, **params)
+            for rx in range(R_Nx):
+                for ry in range(R_Ny):
+                    peaks = datacube.find_Bragg_disks(
+                        template=probe.kernel, data=(rx, ry), **params
+                    )
+                    if pla is None:
+                        pla = py4DSTEM.PointListArray(
+                            dtype=peaks.data.dtype, shape=datacube.Rshape
+                        )
+                    pla.get_pointlist(rx, ry).add(peaks.data)
+
+                    count += 1
+                    self.find_all_progress.setValue(count)
+                    parent.qtapp.processEvents()
+
+            braggvectors = py4DSTEM.BraggVectors(datacube.Rshape, datacube.Qshape)
+            braggvectors.set_raw_vectors(pla)
+            datacube.attach(braggvectors)
+
+            bvm = braggvectors.get_bvm(mode="raw")
+            bvm.name = "bvm"
+            datacube.attach(bvm)
         except Exception as exc:
             parent.statusBar().showMessage(f"Disk detection failed: {exc}", 5_000)
+            self.find_all_progress.setVisible(False)
+            self.find_all_button.setEnabled(True)
             raise
 
+        self.find_all_progress.setVisible(False)
+        self.find_all_button.setEnabled(True)
         parent.statusBar().showMessage(
-            "Disk detection complete. Results are attached to the dataset "
-            "(export via File > Export Datacube > py4DSTEM HDF5).",
-            10_000,
+            "Disk detection complete. Choose where to save the results...", 5_000
         )
+
+        self._save_results(parent)
+
+    def _save_results(self, parent):
+        # Reuses the main window's own save-file dialog and py4DSTEM's own
+        # saving logic/HDF5 structure (py4DSTEM.save), matching exactly how
+        # File > Export Datacube > py4DSTEM HDF5 already saves the dataset --
+        # since braggvectors/bvm are now attached to its tree, they're
+        # written out as part of the same native HDF5 structure for free.
+        try:
+            filename = parent.get_savefile_name("py4DSTEM HDF5")
+        except ValueError:
+            parent.statusBar().showMessage(
+                "Save cancelled. Results remain attached to the dataset in "
+                "memory (export later via File > Export Datacube > "
+                "py4DSTEM HDF5).",
+                10_000,
+            )
+            return
+
+        try:
+            py4DSTEM.save(filename, parent.datacube, mode="o")
+        except Exception as exc:
+            parent.statusBar().showMessage(f"Saving failed: {exc}", 5_000)
+            raise
+
+        parent.statusBar().showMessage(f"Saved to {filename}", 10_000)
