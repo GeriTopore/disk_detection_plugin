@@ -15,7 +15,7 @@ classifiers = [
 ]
 dependencies = [
     "py4D_browser",
-    "py4dstem >= 0.14.9",
+    "py4dstem >= 0.14.8",
     "numpy >= 1.19",
     "scipy",
     "pyqtgraph >= 0.11",
