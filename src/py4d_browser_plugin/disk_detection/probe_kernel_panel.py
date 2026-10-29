@@ -244,13 +244,7 @@ class ProbeKernelPanel(QWidget):
         for spin in (self.threshold_spin, self.expansion_spin, self.opening_spin):
             spin.valueChanged.connect(self.on_probe_params_changed)
 
-        generate_probe_button = QPushButton("Generate Probe")
-        generate_probe_button.clicked.connect(self.generate_probe)
-
-        mask_layout = QVBoxLayout()
-        mask_layout.addLayout(mask_form)
-        mask_layout.addWidget(generate_probe_button)
-        mask_box.setLayout(mask_layout)
+        mask_box.setLayout(mask_form)
 
         self.probe_view = pg.ImageView()
         self.probe_view.setImage(np.zeros((256, 256)))
@@ -295,13 +289,11 @@ class ProbeKernelPanel(QWidget):
         for spin in (self.sigma_spin, self.r_inner_spin, self.r_outer_spin):
             spin.valueChanged.connect(self.on_kernel_params_changed)
 
-        generate_kernel_button = QPushButton("Generate Kernel")
-        generate_kernel_button.clicked.connect(self.generate_kernel)
+        kernel_box.setLayout(kernel_form)
 
-        kernel_layout = QVBoxLayout()
-        kernel_layout.addLayout(kernel_form)
-        kernel_layout.addWidget(generate_kernel_button)
-        kernel_box.setLayout(kernel_layout)
+        # Generating the probe generates its kernel too (see generate_probe).
+        generate_button = QPushButton("Generate Probe && Kernel")
+        generate_button.clicked.connect(self.generate_probe)
 
         self.kernel_view = pg.ImageView()
         self.kernel_view.setImage(np.zeros((256, 256)))
@@ -324,6 +316,7 @@ class ProbeKernelPanel(QWidget):
         layout.addWidget(source_box)
         layout.addWidget(mask_box)
         layout.addWidget(kernel_box)
+        layout.addWidget(generate_button)
         self.setLayout(layout)
 
         # Splitters (rather than plain layouts) so the panes can be resized

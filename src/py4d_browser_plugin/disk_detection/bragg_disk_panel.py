@@ -234,6 +234,10 @@ class BraggPreviewPane(QGroupBox):
                 autoRange=self.rs_view.image.shape != image.T.shape,
             )
 
+    def set_colormaps(self, realspace_cmap, diffraction_cmap):
+        self.rs_view.setColorMap(realspace_cmap)
+        self.dp_view.setColorMap(diffraction_cmap)
+
     def set_marker_diameter(self, diameter):
         self.scatter.setSize(diameter)
 
@@ -302,6 +306,15 @@ class BraggDiskPanel(QWidget):
 
         self.settings_pane = BraggDiskSettingsPane()
         self.settings_pane.connect_changed(self._on_detection_params_changed)
+
+        # Previews use the same colormaps as the main window's views, and
+        # follow them if they're changed there (via the gradient's
+        # right-click menu).
+        parent = self.window.parent
+        for widget in (parent.real_space_widget, parent.diffraction_space_widget):
+            widget.ui.histogram.gradient.sigGradientChangeFinished.connect(
+                self.sync_colormaps
+            )
 
         scaling_box = self._build_scaling_box()
 
@@ -391,6 +404,7 @@ class BraggDiskPanel(QWidget):
         self.panes.append(pane)
         self.previews_layout.addWidget(pane)
         self.window.disable_auto_default(pane)
+        self.sync_colormaps(panes=[pane])
 
         if self.window.probe is not None:
             pane.set_marker_diameter(2 * self.window.probe_radius)
@@ -429,6 +443,15 @@ class BraggDiskPanel(QWidget):
         except Exception as exc:
             parent.statusBar().showMessage(f"Peak finding failed: {exc}", 5_000)
             return np.array([]), np.array([])
+
+    def sync_colormaps(self, *_, panes=None):
+        parent = self.window.parent
+        realspace_cmap = parent.real_space_widget.ui.histogram.gradient.colorMap()
+        diffraction_cmap = (
+            parent.diffraction_space_widget.ui.histogram.gradient.colorMap()
+        )
+        for pane in panes if panes is not None else self.panes:
+            pane.set_colormaps(realspace_cmap, diffraction_cmap)
 
     def _main_scan_position(self, parent):
         # Where the main window's real-space cursor is -- or, for a

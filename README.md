@@ -11,7 +11,7 @@ The plugin is discovered automatically the next time you launch `py4DGUI`, and a
 ## Usage
 1. Load a 4D-STEM dataset in the main browser window.
 2. Open Plugins > Disk Detection...
-3. Choose a probe source (a rectangular or point selection on the current dataset, a separate vacuum file, or a synthetic probe) and generate a probe; its kernel is generated along with it and the Bragg disk previews update straight away. Change the kernel mode/parameters and regenerate the kernel as needed.
+3. Choose a probe source (a rectangular or point selection on the current dataset, a separate vacuum file, or a synthetic probe) set the mask and kernel parameters, then click "Generate Probe & Kernel"; the Bragg disk previews update straight away.
 4. Tune detection parameters against one or more preview positions ("Update Previews" applies them), then use "Find All Bragg Disks" to run detection across the whole dataset.
 
 ### Saved results
