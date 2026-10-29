@@ -6,6 +6,7 @@ import pyqtgraph as pg
 import py4DSTEM
 from PyQt5 import QtCore
 from PyQt5.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -119,14 +120,21 @@ class ProbeKernelPanel(QWidget):
         self.qy0 = None
         self._source = None
         self._vacuum_datacube = None
+        self._vacuum_filepath = None
         self._measured_radius = None  # most recently measured BF disk radius
+
+        # Exactly what the current probe/kernel were generated with, as
+        # py4DSTEM keyword arguments -- saved alongside the detection results
+        # so the same probe/kernel can be rebuilt outside the GUI.
+        self.probe_params = None
+        self.kernel_params = None
 
         # ---- vacuum region source ----
         source_box = QGroupBox("Probe Source")
         source_layout = QVBoxLayout()
 
         button_row = QHBoxLayout()
-        use_selection_button = QPushButton("Selection")
+        use_selection_button = QPushButton("From selection")
         use_selection_button.setToolTip(
             "Measure the probe from the current point or rectangular selection "
             "on the main window's virtual image"
@@ -144,6 +152,18 @@ class ProbeKernelPanel(QWidget):
         use_synthetic_button.clicked.connect(self.use_synthetic_probe)
         button_row.addWidget(use_synthetic_button)
         source_layout.addLayout(button_row)
+
+        # Checkable, so the source in use stays pressed in (and none is
+        # until one has been chosen).
+        self._source_buttons = {
+            "selection": use_selection_button,
+            "vacuum_file": load_vacuum_button,
+            "synthetic": use_synthetic_button,
+        }
+        self._source_group = QButtonGroup(self)
+        for button in self._source_buttons.values():
+            button.setCheckable(True)
+            self._source_group.addButton(button)
 
         self.source_label = QLabel("No vacuum region selected yet")
         self.source_label.setWordWrap(True)
@@ -195,20 +215,30 @@ class ProbeKernelPanel(QWidget):
         self.threshold_spin.setDecimals(2)
         self.threshold_spin.setValue(0.0)
         self.threshold_spin.setToolTip(
-            "Mask threshold, relative to the probe's maximum intensity"
+            "Pixels above this fraction of the probe's maximum intensity count\n"
+            "as probe; the rest is masked out as background. 0 keeps nearly\n"
+            "everything; 0.1-0.3 is typical for noisy data."
         )
         mask_form.addRow("Threshold", self.threshold_spin)
 
         self.expansion_spin = QSpinBox()
-        self.expansion_spin.setRange(0, 500)
+        # py4DSTEM divides by this, so 0 would make the probe NaN.
+        self.expansion_spin.setRange(1, 500)
         self.expansion_spin.setValue(12)
-        self.expansion_spin.setToolTip("Mask expansion, in pixels")
+        self.expansion_spin.setToolTip(
+            "Width in pixels of the smooth fall-off applied outside the mask\n"
+            "edge, instead of a hard cut. Larger = softer, wider edge."
+        )
         mask_form.addRow("Expansion", self.expansion_spin)
 
         self.opening_spin = QSpinBox()
         self.opening_spin.setRange(0, 500)
         self.opening_spin.setValue(3)
-        self.opening_spin.setToolTip("Mask binary opening iterations")
+        self.opening_spin.setToolTip(
+            "Binary opening iterations: removes specks and thin features\n"
+            "from the mask, leaving the solid bright-field disk. Too high\n"
+            "starts to erode the disk edge."
+        )
         mask_form.addRow("Opening", self.opening_spin)
 
         for spin in (self.threshold_spin, self.expansion_spin, self.opening_spin):
@@ -319,15 +349,18 @@ class ProbeKernelPanel(QWidget):
         try:
             filepath = parent.show_file_dialog()
         except ValueError:
+            self._sync_source_buttons()
             return
 
         try:
             datacube = _load_datacube_from_file(filepath, dialog_parent=self)
         except Exception as exc:
             parent.statusBar().showMessage(f"Couldn't load vacuum file: {exc}", 5_000)
+            self._sync_source_buttons()
             return
 
         self._vacuum_datacube = datacube
+        self._vacuum_filepath = os.path.abspath(filepath)
         self._set_source("vacuum_file", f"Source: {os.path.basename(filepath)}")
 
     def use_synthetic_probe(self):
@@ -338,7 +371,18 @@ class ProbeKernelPanel(QWidget):
         self._source = source
         self.source_label.setText(label_text)
         self.synth_params.setEnabled(source == "synthetic")
+        self._sync_source_buttons()
         self.on_probe_params_changed()
+
+    def _sync_source_buttons(self):
+        # Clicking a button checks it straight away, so put the check back
+        # on the source actually in use when that didn't change (e.g. a
+        # cancelled vacuum file load). Exclusivity is lifted meanwhile, as
+        # an exclusive group won't uncheck its last checked button.
+        self._source_group.setExclusive(False)
+        for source, button in self._source_buttons.items():
+            button.setChecked(source == self._source)
+        self._source_group.setExclusive(True)
 
     def on_probe_params_changed(self, *_):
         # A new probe means a new kernel (and so new detections), which
@@ -368,22 +412,26 @@ class ProbeKernelPanel(QWidget):
         self.synth_radius_spin.setValue(radius)
         self.synth_radius_spin.blockSignals(False)
 
-    def _selection_roi_mask(self, parent) -> Optional[np.ndarray]:
+    def _selection_roi(self, parent) -> Optional[tuple]:
         """
-        Build a boolean R-space mask from whatever is currently selected on
-        the main window's virtual image -- a rectangular region, or a
-        single scan position (point selector).
+        Get the (rx_min, rx_max, ry_min, ry_max) bounds of whatever is
+        currently selected on the main window's virtual image -- a
+        rectangular region, or a single scan position (point selector).
         """
         detector: DetectorInfo = parent.get_virtual_image_detector()
 
         if detector["shape"] is DetectorShape.RECTANGULAR:
-            return detector["mask"]
+            slice_x, slice_y = detector["slice"]
+            return (
+                int(slice_x.start),
+                int(slice_x.stop),
+                int(slice_y.start),
+                int(slice_y.stop),
+            )
 
         if detector["shape"] is DetectorShape.POINT:
-            xc, yc = detector["point"]
-            mask = np.zeros(parent.datacube.Rshape, dtype=np.bool_)
-            mask[xc, yc] = True
-            return mask
+            xc, yc = (int(i) for i in detector["point"])
+            return (xc, xc + 1, yc, yc + 1)
 
         parent.statusBar().showMessage(
             "Select a point or rectangular region on the virtual image to "
@@ -392,32 +440,42 @@ class ProbeKernelPanel(QWidget):
         )
         return None
 
+    def _mask_params(self):
+        return dict(
+            threshold=self.threshold_spin.value(),
+            expansion=self.expansion_spin.value(),
+            opening=self.opening_spin.value(),
+        )
+
     def _measure_probe_from_current_selection(self, parent):
         """
-        Measure a (probe, alpha, qx0, qy0) from whatever is currently
-        selected on the main window (point or rectangular), or return None
-        (with a status bar message already shown) if there's no usable
-        selection.
+        Measure a (probe, alpha, qx0, qy0, probe_params) from whatever is
+        currently selected on the main window (point or rectangular), or
+        return None (with a status bar message already shown) if there's no
+        usable selection.
         """
-        mask = self._selection_roi_mask(parent)
-        if mask is None:
+        roi = self._selection_roi(parent)
+        if roi is None:
             return None
+        rx_min, rx_max, ry_min, ry_max = roi
+        mask_params = self._mask_params()
 
-        threshold = self.threshold_spin.value()
-        expansion = self.expansion_spin.value()
-        opening = self.opening_spin.value()
-
-        if mask.sum() == 1:
-            xc, yc = (int(i[0]) for i in np.nonzero(mask))
+        if (rx_max - rx_min) * (ry_max - ry_min) == 1:
             probe = _vacuum_probe_from_single_pixel(
-                parent.datacube, xc, yc, threshold, expansion, opening
+                parent.datacube, rx_min, ry_min, **mask_params
             )
         else:
-            probe = parent.datacube.get_vacuum_probe(
-                threshold=threshold, expansion=expansion, opening=opening, ROI=mask
-            )
+            # Passed as a boolean mask rather than as the bounds tuple
+            # get_vacuum_probe also accepts: as of py4DSTEM 0.14.18 a tuple
+            # ROI is read relative to its own corner, i.e. always averages
+            # the patterns at the top-left of the scan.
+            mask = np.zeros(parent.datacube.Rshape, dtype=np.bool_)
+            mask[rx_min:rx_max, ry_min:ry_max] = True
+            probe = parent.datacube.get_vacuum_probe(ROI=mask, **mask_params)
+
         alpha, qx0, qy0 = parent.datacube.get_probe_size(probe.probe)
-        return probe, alpha, qx0, qy0
+        probe_params = dict(source="selection", ROI=roi, get_vacuum_probe=mask_params)
+        return probe, alpha, qx0, qy0, probe_params
 
     def generate_probe(self):
         parent = self.window.parent
@@ -431,22 +489,24 @@ class ProbeKernelPanel(QWidget):
             result = self._measure_probe_from_current_selection(parent)
             if result is None:
                 return
-            self.probe, self.alpha, self.qx0, self.qy0 = result
+            self.probe, self.alpha, self.qx0, self.qy0, self.probe_params = result
             self._record_measured_radius(self.alpha)
 
         elif self._source == "vacuum_file":
             if self._vacuum_datacube is None:
                 parent.statusBar().showMessage("Load a vacuum file first!", 5_000)
                 return
-            self.probe = self._vacuum_datacube.get_vacuum_probe(
-                threshold=self.threshold_spin.value(),
-                expansion=self.expansion_spin.value(),
-                opening=self.opening_spin.value(),
-            )
+            mask_params = self._mask_params()
+            self.probe = self._vacuum_datacube.get_vacuum_probe(**mask_params)
             self.alpha, self.qx0, self.qy0 = parent.datacube.get_probe_size(
                 self.probe.probe
             )
             self._record_measured_radius(self.alpha)
+            self.probe_params = dict(
+                source="vacuum_file",
+                filepath=self._vacuum_filepath,
+                get_vacuum_probe=mask_params,
+            )
 
         elif self._source == "synthetic":
             # With "Use measured radius" checked, re-measure the BF disk
@@ -457,16 +517,21 @@ class ProbeKernelPanel(QWidget):
             if self.use_measured_radius_checkbox.isChecked():
                 result = self._measure_probe_from_current_selection(parent)
                 if result is not None:
-                    _, measured_alpha, _, _ = result
+                    _, measured_alpha, _, _, _ = result
                     self._record_measured_radius(measured_alpha)
 
             Qshape = (parent.datacube.Q_Nx, parent.datacube.Q_Ny)
-            radius = self.synth_radius_spin.value()
-            self.probe = py4DSTEM.Probe.generate_synthetic_probe(
-                radius=radius, width=self.synth_width_spin.value(), Qshape=Qshape
+            synthetic_params = dict(
+                radius=self.synth_radius_spin.value(),
+                width=self.synth_width_spin.value(),
+                Qshape=Qshape,
             )
-            self.alpha = radius
+            self.probe = py4DSTEM.Probe.generate_synthetic_probe(**synthetic_params)
+            self.alpha = synthetic_params["radius"]
             self.qx0, self.qy0 = Qshape[0] / 2.0, Qshape[1] / 2.0
+            self.probe_params = dict(
+                source="synthetic", generate_synthetic_probe=synthetic_params
+            )
 
         else:
             parent.statusBar().showMessage(
@@ -495,16 +560,17 @@ class ProbeKernelPanel(QWidget):
             return
 
         mode = self.kernel_mode_combo.currentText()
-        kwargs = {}
+        kernel_params = dict(mode=mode, origin=(self.qx0, self.qy0))
         if mode == "gaussian":
-            kwargs["sigma"] = self.sigma_spin.value()
+            kernel_params["sigma"] = self.sigma_spin.value()
         elif mode in ("sigmoid", "sigmoid_log"):
-            kwargs["radii"] = (
+            kernel_params["radii"] = (
                 self.alpha * self.r_inner_spin.value(),
                 self.alpha * self.r_outer_spin.value(),
             )
 
-        self.probe.get_kernel(mode=mode, origin=(self.qx0, self.qy0), **kwargs)
+        self.probe.get_kernel(**kernel_params)
+        self.kernel_params = kernel_params
         kernel_shifted = np.fft.fftshift(self.probe.kernel)
         # Only reset the zoom when the shape changes, so live updates don't
         # undo any panning/zooming the user has done.

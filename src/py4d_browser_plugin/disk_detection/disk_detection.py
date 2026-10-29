@@ -3,6 +3,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
     QHBoxLayout,
+    QPushButton,
     QScrollArea,
     QSplitter,
     QToolButton,
@@ -32,8 +33,10 @@ class DiskDetectionPlugin(QWidget):
 
         self.parent = parent
         self.window = None
+        self._reload_pending = False
 
         plugin_action.triggered.connect(self.launch_window)
+        parent.signal_datacube_changed.connect(self.on_datacube_changed)
 
     def close(self):
         if self.window is not None:
@@ -42,19 +45,58 @@ class DiskDetectionPlugin(QWidget):
     def launch_window(self):
         if self.window is None:
             self.window = DiskDetectionWindow(parent=self.parent)
+            self.window.sig_find_all_finished.connect(self._on_find_all_finished)
+
+        if not self.window.isVisible():
+            # (Re)opening: start the previews from the main window's view.
+            self.window.bragg_disk_panel.show_main_view()
 
         self.window.show()
         self.window.raise_()
         self.window.activateWindow()
 
+    def on_datacube_changed(self):
+        if self.window is None:
+            return
+        if self.window.finding_all:
+            # Find All Bragg Disks keeps the GUI responsive while it runs,
+            # which is how a new dataset can get loaded mid-run. It stops
+            # itself when it notices; reload once it has.
+            self._reload_pending = True
+            return
+        self.reload_window()
+
+    def _on_find_all_finished(self):
+        if self._reload_pending:
+            self._reload_pending = False
+            self.reload_window()
+
+    def reload_window(self):
+        # The probe, kernel, previews and results all belong to the old
+        # dataset (whose scan/pattern shapes may differ), so start over with
+        # a fresh window -- reopened in the same place if it was open.
+        old_window, self.window = self.window, None
+        was_visible = old_window.isVisible()
+        geometry = old_window.saveGeometry()
+        old_window.close()
+        old_window.deleteLater()
+
+        if was_visible:
+            self.launch_window()
+            self.window.restoreGeometry(geometry)
+
 
 class DiskDetectionWindow(QDialog):
+    # Emitted when a Find All Bragg Disks run ends, however it ends.
+    sig_find_all_finished = QtCore.pyqtSignal()
+
     def __init__(self, parent: "DataViewer"):
         super().__init__(parent=parent)
 
         self.parent = parent
         self.probe = None  # the current Probe object, once a kernel is generated
         self.probe_radius = None  # measured bright-field disk radius, in pixels
+        self.finding_all = False  # a Find All Bragg Disks run is in progress
 
         self.setWindowTitle("Disk Detection")
 
@@ -129,6 +171,16 @@ class DiskDetectionWindow(QDialog):
         layout.addWidget(main_splitter)
 
         self.resize(1400, 900)
+
+        self.disable_auto_default(self)
+
+    def disable_auto_default(self, widget):
+        # QDialog makes every push button in it "auto-default", drawing the
+        # first one (the "From selection" source button) highlighted as if
+        # already chosen, and having Enter in any spinbox click it. Needs
+        # calling again for buttons added later (e.g. new preview panes).
+        for button in widget.findChildren(QPushButton):
+            button.setAutoDefault(False)
 
     def toggle_controls(self):
         self._set_controls_visible(self.controls_scroll.isHidden())

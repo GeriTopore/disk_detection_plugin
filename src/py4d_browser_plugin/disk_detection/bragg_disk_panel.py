@@ -1,8 +1,11 @@
+import os
+import time
 from functools import partial
 
 import numpy as np
 import pyqtgraph as pg
 import py4DSTEM
+from PyQt5 import QtCore
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -12,6 +15,7 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QRadioButton,
@@ -20,13 +24,27 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from py4D_browser.utils import pg_point_roi
+from py4D_browser.utils import DetectorShape, pg_point_roi
+
+from . import saving
 
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from py4D_browser import DataViewer
     from .disk_detection import DiskDetectionWindow
+
+
+def _format_duration(seconds):
+    if seconds < 1:
+        return f"{seconds * 1000:.2f} ms"
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    minutes, seconds = divmod(round(seconds), 60)
+    if minutes < 60:
+        return f"{minutes} min {seconds:02d} s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes:02d} min {seconds:02d} s"
 
 
 class BraggDiskSettingsPane(QGroupBox):
@@ -104,7 +122,7 @@ class BraggDiskSettingsPane(QGroupBox):
 
         self.min_peak_spacing_spin = QSpinBox()
         self.min_peak_spacing_spin.setRange(0, 1000)
-        self.min_peak_spacing_spin.setValue(60)
+        self.min_peak_spacing_spin.setValue(20)
         self.min_peak_spacing_spin.setToolTip(
             "Minimum spacing between detected peaks, in pixels (minPeakSpacing)"
         )
@@ -120,7 +138,7 @@ class BraggDiskSettingsPane(QGroupBox):
 
         self.max_num_peaks_spin = QSpinBox()
         self.max_num_peaks_spin.setRange(1, 1000)
-        self.max_num_peaks_spin.setValue(70)
+        self.max_num_peaks_spin.setValue(50)
         self.max_num_peaks_spin.setToolTip(
             "Maximum number of peaks to return (maxNumPeaks)"
         )
@@ -226,6 +244,13 @@ class BraggPreviewPane(QGroupBox):
         xc = int(np.clip(xc, 0, datacube.R_Nx - 1))
         yc = int(np.clip(yc, 0, datacube.R_Ny - 1))
         return xc, yc
+
+    def set_scan_position(self, xc, yc):
+        # The inverse of get_scan_position. Signals are blocked, so the
+        # caller is responsible for updating the pane.
+        self.rs_selector.blockSignals(True)
+        self.rs_selector.setPos((yc - 0.5, xc - 0.5))
+        self.rs_selector.blockSignals(False)
 
     def update_dp(self, dp, scale_fn, relevel):
         self.last_dp = dp
@@ -365,12 +390,11 @@ class BraggDiskPanel(QWidget):
         )
         self.panes.append(pane)
         self.previews_layout.addWidget(pane)
+        self.window.disable_auto_default(pane)
 
         if self.window.probe is not None:
-            parent = self.window.parent
-            pane.set_realspace_image(parent.unscaled_realspace_image)
             pane.set_marker_diameter(2 * self.window.probe_radius)
-            self.update_previews(panes=[pane])
+        self.show_main_view(panes=[pane])
 
         if len(self.panes) - 1 >= self.MAX_ADDITIONAL_PANES:
             self.add_pane_button.setEnabled(False)
@@ -406,12 +430,45 @@ class BraggDiskPanel(QWidget):
             parent.statusBar().showMessage(f"Peak finding failed: {exc}", 5_000)
             return np.array([]), np.array([])
 
+    def _main_scan_position(self, parent):
+        # Where the main window's real-space cursor is -- or, for a
+        # rectangular selection, its centre.
+        detector = parent.get_virtual_image_detector()
+        if detector["shape"] is DetectorShape.POINT:
+            xc, yc = detector["point"]
+        else:
+            slice_x, slice_y = detector["slice"]
+            xc = (slice_x.start + slice_x.stop - 1) // 2
+            yc = (slice_y.start + slice_y.stop - 1) // 2
+        return (
+            int(np.clip(xc, 0, parent.datacube.R_Nx - 1)),
+            int(np.clip(yc, 0, parent.datacube.R_Ny - 1)),
+        )
+
+    def show_main_view(self, panes=None):
+        """
+        Mirror the main window's current view in the given (default: all)
+        panes: its virtual image, with the pane's cursor at the main
+        window's scan position and that position's diffraction pattern.
+        """
+        parent = self.window.parent
+        if parent.datacube is None:
+            return
+
+        panes = panes if panes is not None else self.panes
+        xc, yc = self._main_scan_position(parent)
+        for pane in panes:
+            pane.set_realspace_image(parent.unscaled_realspace_image)
+            pane.set_scan_position(xc, yc)
+        self.update_previews(panes=panes)
+
     def update_previews(self, panes=None, relevel=False):
         # Called when a pane's point selector moves (position + peaks +
-        # display all need refreshing for that pane).
+        # display all need refreshing for that pane). Until there's a
+        # kernel, just shows the diffraction pattern.
         parent = self.window.parent
         probe = self.window.probe
-        if probe is None or parent.datacube is None:
+        if parent.datacube is None:
             return
 
         panes = panes if panes is not None else self.panes
@@ -421,9 +478,10 @@ class BraggDiskPanel(QWidget):
         for pane in panes:
             xc, yc = pane.get_scan_position(parent.datacube)
             dp = parent.datacube.data[xc, yc, :, :]
-            qx, qy = self._find_peaks(dp, xc, yc, probe, params)
             pane.update_dp(dp, scale_fn, relevel=relevel)
-            pane.update_scatter(qx, qy)
+            if probe is not None:
+                qx, qy = self._find_peaks(dp, xc, yc, probe, params)
+                pane.update_scatter(qx, qy)
 
     def on_detection_params_changed(self, *_):
         # Detection-only parameters (thresholds, corrPower, etc.) don't
@@ -458,6 +516,14 @@ class BraggDiskPanel(QWidget):
             parent.statusBar().showMessage("Generate a probe kernel first!", 5_000)
             return
 
+        self.window.finding_all = True
+        try:
+            self._find_all(parent, probe)
+        finally:
+            self.window.finding_all = False
+            self.window.sig_find_all_finished.emit()
+
+    def _find_all(self, parent, probe):
         params = self.settings_pane.get_params()
         datacube = parent.datacube
         R_Nx, R_Ny = datacube.R_Nx, datacube.R_Ny
@@ -477,6 +543,7 @@ class BraggDiskPanel(QWidget):
 
         pla = None
         count = 0
+        start_time = time.perf_counter()
         try:
             for rx in range(R_Nx):
                 for ry in range(R_Ny):
@@ -493,6 +560,18 @@ class BraggDiskPanel(QWidget):
                     self.find_all_progress.setValue(count)
                     parent.qtapp.processEvents()
 
+                    # A new dataset may have been loaded while events were
+                    # processed -- these results would belong to neither.
+                    if parent.datacube is not datacube:
+                        self.find_all_progress.setVisible(False)
+                        self.find_all_button.setEnabled(True)
+                        parent.statusBar().showMessage(
+                            "Find All Bragg Disks stopped: a new dataset was "
+                            "loaded.",
+                            10_000,
+                        )
+                        return
+
             braggvectors = py4DSTEM.BraggVectors(datacube.Rshape, datacube.Qshape)
             braggvectors.set_raw_vectors(pla)
             datacube.attach(braggvectors)
@@ -500,6 +579,7 @@ class BraggDiskPanel(QWidget):
             bvm = braggvectors.get_bvm(mode="raw")
             bvm.name = "bvm"
             datacube.attach(bvm)
+            elapsed = time.perf_counter() - start_time
         except Exception as exc:
             parent.statusBar().showMessage(f"Disk detection failed: {exc}", 5_000)
             self.find_all_progress.setVisible(False)
@@ -508,18 +588,130 @@ class BraggDiskPanel(QWidget):
 
         self.find_all_progress.setVisible(False)
         self.find_all_button.setEnabled(True)
+
+        saved = self._save_results(parent, braggvectors, params)
+        self._show_summary(datacube, elapsed, saved)
+
+    def _show_summary(self, datacube, elapsed, saved):
+        n_patterns = datacube.R_Nx * datacube.R_Ny
+        lines = [
+            f"Patterns: {n_patterns:,} ({datacube.R_Nx} × {datacube.R_Ny} scan)",
+            f"Total time: {_format_duration(elapsed)}",
+            f"Average per pattern: {_format_duration(elapsed / n_patterns)}",
+            "",
+        ]
+        if saved is not None:
+            filepath, datapath, params_filepath = saved
+            lines += [
+                "Bragg vectors saved to:",
+                filepath,
+                f"at {datapath}",
+                "",
+                "Parameters saved to:",
+                params_filepath,
+            ]
+        else:
+            lines.append(
+                "The results were not saved; they remain attached to the "
+                "dataset in memory."
+            )
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("Disk Detection Complete")
+        box.setText("Bragg disk detection completed successfully.")
+        box.setInformativeText("\n".join(lines))
+        # So the paths can be copied.
+        for label in box.findChildren(QLabel):
+            label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        box.exec_()
+
+    def _save_results(self, parent, braggvectors, detect_params):
+        """
+        Save the Bragg vectors into the file the raw data came from when
+        py4DSTEM can append to it, otherwise export the whole dataset (with
+        the results attached) to a new file -- then write the parameters
+        used next to whichever file that was. Returns (filepath, datapath,
+        params_filepath), or None if nothing was saved.
+        """
+        source = saving.find_source_emd_group(parent)
+        saved = None
+        if source is not None:
+            saved = self._append_to_source_file(parent, braggvectors, *source)
+            if saved is False:
+                return None
+        if saved is None:
+            saved = self._save_datacube_as(parent)
+            if saved is None:
+                return None
+        filepath, datapath = saved
+
+        probe_kernel_panel = self.window.probe_kernel_panel
+        params_filepath = saving.write_params_file(
+            filepath,
+            data=dict(
+                filepath=saving.loaded_filepath(parent),
+                datapath=source[1] if source is not None else None,
+                shape=parent.datacube.data.shape,
+            ),
+            probe_params=probe_kernel_panel.probe_params,
+            kernel_params=probe_kernel_panel.kernel_params,
+            detect_params=detect_params,
+            braggvectors_datapath=datapath,
+        )
+
+        parent.statusBar().showMessage(
+            f"Saved Bragg vectors to {filepath} (at {datapath}), and the "
+            f"parameters used to {params_filepath}",
+            15_000,
+        )
+        return filepath, datapath, params_filepath
+
+    def _append_to_source_file(self, parent, braggvectors, filepath, group):
+        """
+        Returns (filepath, datapath) once saved, False if the user declined
+        to replace existing results, or None if the file couldn't be
+        written to (so the caller can fall back to exporting a new file).
+        """
+        datapath = f"{group}/{braggvectors.name}"
+        replace = saving.has_node(filepath, datapath)
+        if replace:
+            answer = QMessageBox.question(
+                self,
+                "Replace Bragg Vectors?",
+                f"{os.path.basename(filepath)} already contains Bragg vectors "
+                f"at {datapath}.\n\nReplace them with the new results?",
+            )
+            if answer != QMessageBox.Yes:
+                parent.statusBar().showMessage(
+                    "Not saved. Results remain attached to the dataset in " "memory.",
+                    10_000,
+                )
+                return False
+
+        parent.statusBar().showMessage(f"Saving Bragg vectors to {filepath}...")
+        try:
+            saving.append_braggvectors(braggvectors, filepath, group, replace)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Couldn't Save Into Source File",
+                f"Couldn't save the Bragg vectors into {filepath}:\n\n{exc}"
+                "\n\nChoose a new file to export the dataset and results to "
+                "instead.",
+            )
+            return None
+        return filepath, datapath
+
+    def _save_datacube_as(self, parent):
+        # For data that didn't come from a py4DSTEM/EMD file, which
+        # py4DSTEM.save can't append to. Reuses the main window's own
+        # save-file dialog and the same py4DSTEM.save call as File > Export
+        # Datacube > py4DSTEM HDF5 -- since braggvectors/bvm are attached to
+        # the datacube's tree, they're written out along with it.
         parent.statusBar().showMessage(
             "Disk detection complete. Choose where to save the results...", 5_000
         )
-
-        self._save_results(parent)
-
-    def _save_results(self, parent):
-        # Reuses the main window's own save-file dialog and py4DSTEM's own
-        # saving logic/HDF5 structure (py4DSTEM.save), matching exactly how
-        # File > Export Datacube > py4DSTEM HDF5 already saves the dataset --
-        # since braggvectors/bvm are now attached to its tree, they're
-        # written out as part of the same native HDF5 structure for free.
         try:
             filename = parent.get_savefile_name("py4DSTEM HDF5")
         except ValueError:
@@ -529,7 +721,7 @@ class BraggDiskPanel(QWidget):
                 "py4DSTEM HDF5).",
                 10_000,
             )
-            return
+            return None
 
         try:
             py4DSTEM.save(filename, parent.datacube, mode="o")
@@ -537,4 +729,4 @@ class BraggDiskPanel(QWidget):
             parent.statusBar().showMessage(f"Saving failed: {exc}", 5_000)
             raise
 
-        parent.statusBar().showMessage(f"Saved to {filename}", 10_000)
+        return filename, saving.find_braggvectors_datapath(filename)
