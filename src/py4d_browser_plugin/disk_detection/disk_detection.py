@@ -2,8 +2,10 @@ from PyQt5 import QtCore
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
+    QHBoxLayout,
     QScrollArea,
     QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -77,31 +79,68 @@ class DiskDetectionWindow(QDialog):
         controls_widget = QWidget()
         controls_widget.setLayout(controls_layout)
 
-        controls_scroll = QScrollArea()
-        controls_scroll.setWidgetResizable(True)
-        controls_scroll.setWidget(controls_widget)
+        self.controls_scroll = QScrollArea()
+        self.controls_scroll.setWidgetResizable(True)
+        self.controls_scroll.setWidget(controls_widget)
         # Scroll vertically only -- never squeeze the controls narrower than
         # they need to be.
-        controls_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        controls_scroll.setMinimumWidth(
-            controls_widget.sizeHint().width()
-            + controls_scroll.verticalScrollBar().sizeHint().width()
+        self.controls_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        controls_width = (
+            controls_widget.minimumSizeHint().width()
+            + self.controls_scroll.verticalScrollBar().sizeHint().width()
         )
+        self.controls_scroll.setMinimumWidth(controls_width)
 
         views_splitter = QSplitter(QtCore.Qt.Vertical)
         views_splitter.addWidget(self.probe_kernel_panel.views)
         views_splitter.addWidget(self.bragg_disk_panel.views)
         views_splitter.setSizes([300, 600])
 
+        # Retracts the controls column so the views fill the window. Lives
+        # outside the column itself so it stays reachable while retracted.
+        self.retract_button = QToolButton()
+        self.retract_button.setAutoRaise(True)
+        self.retract_button.clicked.connect(self.toggle_controls)
+
+        retract_strip = QVBoxLayout()
+        retract_strip.setContentsMargins(0, 0, 0, 0)
+        retract_strip.addWidget(self.retract_button)
+        retract_strip.addStretch()
+
+        views_layout = QHBoxLayout()
+        views_layout.setContentsMargins(0, 0, 0, 0)
+        views_layout.setSpacing(0)
+        views_layout.addLayout(retract_strip)
+        views_layout.addWidget(views_splitter)
+        views_widget = QWidget()
+        views_widget.setLayout(views_layout)
+
         main_splitter = QSplitter(QtCore.Qt.Horizontal)
-        main_splitter.addWidget(controls_scroll)
-        main_splitter.addWidget(views_splitter)
-        main_splitter.setSizes([360, 1040])
+        main_splitter.addWidget(self.controls_scroll)
+        main_splitter.addWidget(views_widget)
+        # Collapsing is the retract button's job; dragging the handle all
+        # the way left would leave it out of step.
+        main_splitter.setCollapsible(0, False)
+        main_splitter.setSizes([controls_width, 1400 - controls_width])
+
+        self._set_controls_visible(True)
 
         layout = QVBoxLayout(self)
         layout.addWidget(main_splitter)
 
         self.resize(1400, 900)
+
+    def toggle_controls(self):
+        self._set_controls_visible(self.controls_scroll.isHidden())
+
+    def _set_controls_visible(self, visible):
+        self.controls_scroll.setVisible(visible)
+        if visible:
+            self.retract_button.setArrowType(QtCore.Qt.LeftArrow)
+            self.retract_button.setToolTip("Hide parameters")
+        else:
+            self.retract_button.setArrowType(QtCore.Qt.RightArrow)
+            self.retract_button.setToolTip("Show parameters")
 
     def is_live(self):
         return self.live_update_checkbox.isChecked()

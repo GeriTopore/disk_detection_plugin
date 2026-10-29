@@ -39,63 +39,95 @@ class BraggDiskSettingsPane(QGroupBox):
         self.corr_power_spin.setRange(0.0, 1.0)
         self.corr_power_spin.setSingleStep(0.02)
         self.corr_power_spin.setValue(1.0)
-        form.addRow("Correlation Power", self.corr_power_spin)
+        self.corr_power_spin.setToolTip(
+            "Correlation power (corrPower): 1 = cross correlation, 0 = phase correlation"
+        )
+        form.addRow("Corr. Power", self.corr_power_spin)
 
         self.sigma_spin = QDoubleSpinBox()
         self.sigma_spin.setRange(0.0, 100.0)
         self.sigma_spin.setValue(0.0)
+        self.sigma_spin.setToolTip(
+            "Gaussian smoothing of the diffraction pattern before correlation (sigma), in pixels"
+        )
         form.addRow("Sigma (0 = off)", self.sigma_spin)
 
         self.sigma_cc_spin = QDoubleSpinBox()
         self.sigma_cc_spin.setRange(0.0, 100.0)
         self.sigma_cc_spin.setValue(0.0)
-        form.addRow("Correlation Smoothing Sigma", self.sigma_cc_spin)
+        self.sigma_cc_spin.setToolTip(
+            "Gaussian smoothing of the correlation map (sigma_cc), in pixels"
+        )
+        form.addRow("Corr. Sigma", self.sigma_cc_spin)
 
         self.subpixel_combo = QComboBox()
         self.subpixel_combo.addItems(["pixel", "poly", "multicorr"])
         self.subpixel_combo.setCurrentText("poly")
-        form.addRow("Subpixel Mode", self.subpixel_combo)
+        self.subpixel_combo.setToolTip("Subpixel refinement mode (subpixel)")
+        form.addRow("Subpixel", self.subpixel_combo)
 
         self.upsample_factor_spin = QSpinBox()
         self.upsample_factor_spin.setRange(1, 256)
         self.upsample_factor_spin.setValue(16)
-        form.addRow("Upsample Factor", self.upsample_factor_spin)
+        self.upsample_factor_spin.setToolTip(
+            "Upsampling factor for multicorr subpixel refinement (upsample_factor)"
+        )
+        form.addRow("Upsample", self.upsample_factor_spin)
 
         self.min_abs_intensity_spin = QDoubleSpinBox()
         self.min_abs_intensity_spin.setRange(0.0, 1e6)
         self.min_abs_intensity_spin.setDecimals(4)
         self.min_abs_intensity_spin.setSingleStep(0.1)
         self.min_abs_intensity_spin.setValue(0.0)
-        form.addRow("Minimum Absolute Intensity", self.min_abs_intensity_spin)
+        self.min_abs_intensity_spin.setToolTip(
+            "Minimum absolute peak intensity (minAbsoluteIntensity)"
+        )
+        form.addRow("Min Abs. Int.", self.min_abs_intensity_spin)
 
         self.min_rel_intensity_spin = QDoubleSpinBox()
         self.min_rel_intensity_spin.setRange(0.0, 1.0)
         self.min_rel_intensity_spin.setDecimals(5)
         self.min_rel_intensity_spin.setSingleStep(0.001)
         self.min_rel_intensity_spin.setValue(0.0)
-        form.addRow("Minimum Relative Intensity", self.min_rel_intensity_spin)
+        self.min_rel_intensity_spin.setToolTip(
+            "Minimum peak intensity relative to the reference peak (minRelativeIntensity)"
+        )
+        form.addRow("Min Rel. Int.", self.min_rel_intensity_spin)
 
         self.relative_to_peak_spin = QSpinBox()
         self.relative_to_peak_spin.setRange(0, 20)
         self.relative_to_peak_spin.setValue(0)
-        form.addRow("Relative to Peak #", self.relative_to_peak_spin)
+        self.relative_to_peak_spin.setToolTip(
+            "Index of the reference peak for the relative intensity cutoff (relativeToPeak)"
+        )
+        form.addRow("Rel. to Peak #", self.relative_to_peak_spin)
 
         self.min_peak_spacing_spin = QSpinBox()
         self.min_peak_spacing_spin.setRange(0, 1000)
         self.min_peak_spacing_spin.setValue(60)
-        form.addRow("Minimum Peak Spacing (px)", self.min_peak_spacing_spin)
+        self.min_peak_spacing_spin.setToolTip(
+            "Minimum spacing between detected peaks, in pixels (minPeakSpacing)"
+        )
+        form.addRow("Min Spacing (px)", self.min_peak_spacing_spin)
 
         self.edge_boundary_spin = QSpinBox()
         self.edge_boundary_spin.setRange(0, 1000)
         self.edge_boundary_spin.setValue(0)
-        form.addRow("Edge Boundary (px)", self.edge_boundary_spin)
+        self.edge_boundary_spin.setToolTip(
+            "Ignore peaks within this many pixels of the pattern edge (edgeBoundary)"
+        )
+        form.addRow("Edge (px)", self.edge_boundary_spin)
 
         self.max_num_peaks_spin = QSpinBox()
         self.max_num_peaks_spin.setRange(1, 1000)
         self.max_num_peaks_spin.setValue(70)
-        form.addRow("Max Number of Peaks", self.max_num_peaks_spin)
+        self.max_num_peaks_spin.setToolTip(
+            "Maximum number of peaks to return (maxNumPeaks)"
+        )
+        form.addRow("Max Peaks", self.max_num_peaks_spin)
 
         self.cuda_checkbox = QCheckBox()
+        self.cuda_checkbox.setToolTip("Run detection on the GPU via CUDA (CUDA)")
         form.addRow("Use CUDA", self.cuda_checkbox)
 
         self.setLayout(form)
@@ -278,7 +310,7 @@ class BraggDiskPanel(QWidget):
         self._append_pane()
 
     def _build_scaling_box(self):
-        scaling_box = QGroupBox("Diffraction Display Scaling")
+        scaling_box = QGroupBox("Display Scaling")
         scaling_layout = QVBoxLayout()
 
         self.scaling_group = QButtonGroup(self)

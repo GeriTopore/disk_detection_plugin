@@ -6,6 +6,7 @@ import pyqtgraph as pg
 import py4DSTEM
 from PyQt5 import QtCore
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -118,48 +119,70 @@ class ProbeKernelPanel(QWidget):
         self.qy0 = None
         self._source = None
         self._vacuum_datacube = None
+        self._measured_radius = None  # most recently measured BF disk radius
 
         # ---- vacuum region source ----
         source_box = QGroupBox("Probe Source")
         source_layout = QVBoxLayout()
 
         button_row = QHBoxLayout()
-        use_selection_button = QPushButton("Use Current Selection")
+        use_selection_button = QPushButton("Selection")
+        use_selection_button.setToolTip(
+            "Measure the probe from the current point or rectangular selection "
+            "on the main window's virtual image"
+        )
         use_selection_button.clicked.connect(self.use_current_selection)
         button_row.addWidget(use_selection_button)
 
-        load_vacuum_button = QPushButton("Load Vacuum File...")
+        load_vacuum_button = QPushButton("Vacuum File...")
+        load_vacuum_button.setToolTip("Measure the probe from a separate vacuum file")
         load_vacuum_button.clicked.connect(self.load_vacuum_file)
         button_row.addWidget(load_vacuum_button)
 
-        use_synthetic_button = QPushButton("Synthetic Probe")
+        use_synthetic_button = QPushButton("Synthetic")
+        use_synthetic_button.setToolTip("Generate a synthetic probe")
         use_synthetic_button.clicked.connect(self.use_synthetic_probe)
         button_row.addWidget(use_synthetic_button)
         source_layout.addLayout(button_row)
 
         self.source_label = QLabel("No vacuum region selected yet")
+        self.source_label.setWordWrap(True)
         source_layout.addWidget(self.source_label)
 
-        # Only used when the source is "Synthetic Probe". Radius defaults to
-        # (and is kept in sync with) the most recently measured bright-field
-        # disk radius, so switching to a synthetic probe starts from a
-        # physically sensible size.
+        # Only used when the source is "Synthetic", and greyed out otherwise.
         synth_form = QFormLayout()
+        synth_form.setContentsMargins(0, 0, 0, 0)
         self.synth_radius_spin = QDoubleSpinBox()
         self.synth_radius_spin.setRange(0.5, 1000.0)
         self.synth_radius_spin.setValue(10.0)
-        synth_form.addRow("Synthetic Radius (px)", self.synth_radius_spin)
+        self.synth_radius_spin.setToolTip("Synthetic probe radius, in pixels")
+        synth_form.addRow("Radius (px)", self.synth_radius_spin)
+
+        # When checked, the radius follows (and is greyed out to) the
+        # bright-field disk radius measured from the current selection;
+        # otherwise the user's own value is used as-is.
+        self.use_measured_radius_checkbox = QCheckBox("Use measured radius")
+        self.use_measured_radius_checkbox.setChecked(True)
+        self.use_measured_radius_checkbox.toggled.connect(
+            self.on_use_measured_radius_toggled
+        )
+        synth_form.addRow(self.use_measured_radius_checkbox)
 
         self.synth_width_spin = QDoubleSpinBox()
         self.synth_width_spin.setRange(0.1, 100.0)
         self.synth_width_spin.setValue(4.0)
-        self.synth_width_spin.setEnabled(False)
-        synth_form.addRow("Synthetic Edge Width (px)", self.synth_width_spin)
+        self.synth_width_spin.setToolTip("Synthetic probe edge width, in pixels")
+        synth_form.addRow("Edge Width (px)", self.synth_width_spin)
 
         for spin in (self.synth_radius_spin, self.synth_width_spin):
             spin.valueChanged.connect(self.on_probe_params_changed)
 
-        source_layout.addLayout(synth_form)
+        self.synth_params = QWidget()
+        self.synth_params.setLayout(synth_form)
+        self.synth_params.setEnabled(False)
+        self.synth_radius_spin.setEnabled(False)
+
+        source_layout.addWidget(self.synth_params)
         source_box.setLayout(source_layout)
 
         # ---- mask settings + probe generation ----
@@ -171,17 +194,22 @@ class ProbeKernelPanel(QWidget):
         self.threshold_spin.setSingleStep(0.01)
         self.threshold_spin.setDecimals(2)
         self.threshold_spin.setValue(0.0)
-        mask_form.addRow("Mask Threshold", self.threshold_spin)
+        self.threshold_spin.setToolTip(
+            "Mask threshold, relative to the probe's maximum intensity"
+        )
+        mask_form.addRow("Threshold", self.threshold_spin)
 
         self.expansion_spin = QSpinBox()
         self.expansion_spin.setRange(0, 500)
         self.expansion_spin.setValue(12)
-        mask_form.addRow("Mask Expansion", self.expansion_spin)
+        self.expansion_spin.setToolTip("Mask expansion, in pixels")
+        mask_form.addRow("Expansion", self.expansion_spin)
 
         self.opening_spin = QSpinBox()
         self.opening_spin.setRange(0, 500)
         self.opening_spin.setValue(3)
-        mask_form.addRow("Mask Opening", self.opening_spin)
+        self.opening_spin.setToolTip("Mask binary opening iterations")
+        mask_form.addRow("Opening", self.opening_spin)
 
         for spin in (self.threshold_spin, self.expansion_spin, self.opening_spin):
             spin.valueChanged.connect(self.on_probe_params_changed)
@@ -206,24 +234,32 @@ class ProbeKernelPanel(QWidget):
         self.kernel_mode_combo.currentTextChanged.connect(
             self.update_kernel_controls_enabled
         )
-        kernel_form.addRow("Kernel Mode", self.kernel_mode_combo)
+        self.kernel_mode_combo.setToolTip("Kernel mode")
+        kernel_form.addRow("Mode", self.kernel_mode_combo)
 
         self.sigma_spin = QDoubleSpinBox()
         self.sigma_spin.setRange(0.0, 100.0)
         self.sigma_spin.setValue(4.0)
+        self.sigma_spin.setToolTip("Gaussian kernel sigma, in pixels")
         kernel_form.addRow("Sigma", self.sigma_spin)
 
         self.r_inner_spin = QDoubleSpinBox()
         self.r_inner_spin.setRange(0.0, 10.0)
         self.r_inner_spin.setSingleStep(0.1)
         self.r_inner_spin.setValue(1.0)
-        kernel_form.addRow("Inner Radius (x probe radius)", self.r_inner_spin)
+        self.r_inner_spin.setToolTip(
+            "Inner sigmoid radius, as a multiple of the probe radius"
+        )
+        kernel_form.addRow("Inner Radius (×r)", self.r_inner_spin)
 
         self.r_outer_spin = QDoubleSpinBox()
         self.r_outer_spin.setRange(0.0, 10.0)
         self.r_outer_spin.setSingleStep(0.1)
         self.r_outer_spin.setValue(4.0)
-        kernel_form.addRow("Outer Radius (x probe radius)", self.r_outer_spin)
+        self.r_outer_spin.setToolTip(
+            "Outer sigmoid radius, as a multiple of the probe radius"
+        )
+        kernel_form.addRow("Outer Radius (×r)", self.r_outer_spin)
 
         self.kernel_mode_combo.currentTextChanged.connect(self.on_kernel_params_changed)
         for spin in (self.sigma_spin, self.r_inner_spin, self.r_outer_spin):
@@ -301,7 +337,7 @@ class ProbeKernelPanel(QWidget):
     def _set_source(self, source, label_text):
         self._source = source
         self.source_label.setText(label_text)
-        self.synth_width_spin.setEnabled(source == "synthetic")
+        self.synth_params.setEnabled(source == "synthetic")
         self.on_probe_params_changed()
 
     def on_probe_params_changed(self, *_):
@@ -313,6 +349,17 @@ class ProbeKernelPanel(QWidget):
     def on_kernel_params_changed(self, *_):
         if self.window.is_live() and self.probe is not None:
             self.generate_kernel()
+
+    def on_use_measured_radius_toggled(self, checked):
+        self.synth_radius_spin.setEnabled(not checked)
+        if checked and self._measured_radius is not None:
+            self._set_synth_radius(self._measured_radius)
+        self.on_probe_params_changed()
+
+    def _record_measured_radius(self, radius):
+        self._measured_radius = radius
+        if self.use_measured_radius_checkbox.isChecked():
+            self._set_synth_radius(radius)
 
     def _set_synth_radius(self, radius):
         # Programmatic sync to the measured radius -- blocked so it doesn't
@@ -385,7 +432,7 @@ class ProbeKernelPanel(QWidget):
             if result is None:
                 return
             self.probe, self.alpha, self.qx0, self.qy0 = result
-            self._set_synth_radius(self.alpha)
+            self._record_measured_radius(self.alpha)
 
         elif self._source == "vacuum_file":
             if self._vacuum_datacube is None:
@@ -399,18 +446,19 @@ class ProbeKernelPanel(QWidget):
             self.alpha, self.qx0, self.qy0 = parent.datacube.get_probe_size(
                 self.probe.probe
             )
-            self._set_synth_radius(self.alpha)
+            self._record_measured_radius(self.alpha)
 
         elif self._source == "synthetic":
-            # Always re-measure the BF disk radius from the current
-            # selection, so the synthetic probe reflects it exactly rather
-            # than depending on a manually-entered or possibly-stale value.
-            # Falls back to the current spinbox value (e.g. hand-entered)
-            # if there's no usable selection to measure from.
-            result = self._measure_probe_from_current_selection(parent)
-            if result is not None:
-                _, measured_alpha, _, _ = result
-                self._set_synth_radius(measured_alpha)
+            # With "Use measured radius" checked, re-measure the BF disk
+            # radius from the current selection every time, so the synthetic
+            # probe reflects it exactly rather than a possibly-stale value
+            # (falling back to the last measured radius if there's no usable
+            # selection to measure from). Otherwise use the user's radius.
+            if self.use_measured_radius_checkbox.isChecked():
+                result = self._measure_probe_from_current_selection(parent)
+                if result is not None:
+                    _, measured_alpha, _, _ = result
+                    self._record_measured_radius(measured_alpha)
 
             Qshape = (parent.datacube.Q_Nx, parent.datacube.Q_Ny)
             radius = self.synth_radius_spin.value()
