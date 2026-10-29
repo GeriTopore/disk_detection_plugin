@@ -100,7 +100,13 @@ def _load_datacube_from_file(
         return py4DSTEM.import_file(filepath, mem="RAM")
 
 
-class ProbeKernelTab(QWidget):
+class ProbeKernelPanel(QWidget):
+    """
+    Probe source/mask/kernel controls. The panel itself is the controls
+    column; its probe and kernel image views live in `self.views`, for the
+    window to lay out alongside the Bragg disk previews.
+    """
+
     def __init__(self, window: "DiskDetectionWindow"):
         super().__init__()
 
@@ -150,6 +156,9 @@ class ProbeKernelTab(QWidget):
         self.synth_width_spin.setEnabled(False)
         synth_form.addRow("Synthetic Edge Width (px)", self.synth_width_spin)
 
+        for spin in (self.synth_radius_spin, self.synth_width_spin):
+            spin.valueChanged.connect(self.on_probe_params_changed)
+
         source_layout.addLayout(synth_form)
         source_box.setLayout(source_layout)
 
@@ -173,6 +182,9 @@ class ProbeKernelTab(QWidget):
         self.opening_spin.setRange(0, 500)
         self.opening_spin.setValue(3)
         mask_form.addRow("Mask Opening", self.opening_spin)
+
+        for spin in (self.threshold_spin, self.expansion_spin, self.opening_spin):
+            spin.valueChanged.connect(self.on_probe_params_changed)
 
         generate_probe_button = QPushButton("Generate Probe")
         generate_probe_button.clicked.connect(self.generate_probe)
@@ -213,6 +225,10 @@ class ProbeKernelTab(QWidget):
         self.r_outer_spin.setValue(4.0)
         kernel_form.addRow("Outer Radius (x probe radius)", self.r_outer_spin)
 
+        self.kernel_mode_combo.currentTextChanged.connect(self.on_kernel_params_changed)
+        for spin in (self.sigma_spin, self.r_inner_spin, self.r_outer_spin):
+            spin.valueChanged.connect(self.on_kernel_params_changed)
+
         generate_kernel_button = QPushButton("Generate Kernel")
         generate_kernel_button.clicked.connect(self.generate_kernel)
 
@@ -236,19 +252,13 @@ class ProbeKernelTab(QWidget):
             pen=pg.mkPen("c", width=2), name="y profile"
         )
 
-        self.accept_button = QPushButton("Accept")
-        self.accept_button.setEnabled(False)
-        self.accept_button.clicked.connect(self.accept)
-
         # ---- overall layout ----
-        left_layout = QVBoxLayout()
-        left_layout.addWidget(source_box)
-        left_layout.addWidget(mask_box)
-        left_layout.addWidget(kernel_box)
-        left_layout.addWidget(self.accept_button)
-        left_layout.addStretch()
-        left_widget = QWidget()
-        left_widget.setLayout(left_layout)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(source_box)
+        layout.addWidget(mask_box)
+        layout.addWidget(kernel_box)
+        self.setLayout(layout)
 
         # Splitters (rather than plain layouts) so the panes can be resized
         # by dragging their borders, same as the main window's own
@@ -258,18 +268,9 @@ class ProbeKernelTab(QWidget):
         kernel_splitter.addWidget(self.kernel_profile_plot)
         kernel_splitter.setSizes([500, 150])
 
-        views_splitter = QSplitter(QtCore.Qt.Horizontal)
-        views_splitter.addWidget(self.probe_view)
-        views_splitter.addWidget(kernel_splitter)
-
-        main_splitter = QSplitter(QtCore.Qt.Horizontal)
-        main_splitter.addWidget(left_widget)
-        main_splitter.addWidget(views_splitter)
-        main_splitter.setSizes([300, 900])
-
-        layout = QHBoxLayout()
-        layout.addWidget(main_splitter)
-        self.setLayout(layout)
+        self.views = QSplitter(QtCore.Qt.Horizontal)
+        self.views.addWidget(self.probe_view)
+        self.views.addWidget(kernel_splitter)
 
         self.update_kernel_controls_enabled(self.kernel_mode_combo.currentText())
 
@@ -301,6 +302,24 @@ class ProbeKernelTab(QWidget):
         self._source = source
         self.source_label.setText(label_text)
         self.synth_width_spin.setEnabled(source == "synthetic")
+        self.on_probe_params_changed()
+
+    def on_probe_params_changed(self, *_):
+        # A new probe means a new kernel (and so new detections), which
+        # generate_probe carries through on its own.
+        if self.window.is_live() and self._source is not None:
+            self.generate_probe()
+
+    def on_kernel_params_changed(self, *_):
+        if self.window.is_live() and self.probe is not None:
+            self.generate_kernel()
+
+    def _set_synth_radius(self, radius):
+        # Programmatic sync to the measured radius -- blocked so it doesn't
+        # count as a user edit and re-trigger a live probe regeneration.
+        self.synth_radius_spin.blockSignals(True)
+        self.synth_radius_spin.setValue(radius)
+        self.synth_radius_spin.blockSignals(False)
 
     def _selection_roi_mask(self, parent) -> Optional[np.ndarray]:
         """
@@ -366,7 +385,7 @@ class ProbeKernelTab(QWidget):
             if result is None:
                 return
             self.probe, self.alpha, self.qx0, self.qy0 = result
-            self.synth_radius_spin.setValue(self.alpha)
+            self._set_synth_radius(self.alpha)
 
         elif self._source == "vacuum_file":
             if self._vacuum_datacube is None:
@@ -380,7 +399,7 @@ class ProbeKernelTab(QWidget):
             self.alpha, self.qx0, self.qy0 = parent.datacube.get_probe_size(
                 self.probe.probe
             )
-            self.synth_radius_spin.setValue(self.alpha)
+            self._set_synth_radius(self.alpha)
 
         elif self._source == "synthetic":
             # Always re-measure the BF disk radius from the current
@@ -391,7 +410,7 @@ class ProbeKernelTab(QWidget):
             result = self._measure_probe_from_current_selection(parent)
             if result is not None:
                 _, measured_alpha, _, _ = result
-                self.synth_radius_spin.setValue(measured_alpha)
+                self._set_synth_radius(measured_alpha)
 
             Qshape = (parent.datacube.Q_Nx, parent.datacube.Q_Ny)
             radius = self.synth_radius_spin.value()
@@ -407,8 +426,14 @@ class ProbeKernelTab(QWidget):
             )
             return
 
-        self.probe_view.setImage(self.probe.probe, autoLevels=True, autoRange=True)
-        self.accept_button.setEnabled(False)
+        self.probe_view.setImage(
+            self.probe.probe,
+            autoLevels=True,
+            autoRange=self.probe_view.image.shape != self.probe.probe.shape,
+        )
+
+        # Keep the kernel (and so the detections) in step with the probe.
+        self.generate_kernel()
 
     def update_kernel_controls_enabled(self, mode):
         self.sigma_spin.setEnabled(mode == "gaussian")
@@ -433,7 +458,13 @@ class ProbeKernelTab(QWidget):
 
         self.probe.get_kernel(mode=mode, origin=(self.qx0, self.qy0), **kwargs)
         kernel_shifted = np.fft.fftshift(self.probe.kernel)
-        self.kernel_view.setImage(kernel_shifted, autoLevels=True, autoRange=True)
+        # Only reset the zoom when the shape changes, so live updates don't
+        # undo any panning/zooming the user has done.
+        self.kernel_view.setImage(
+            kernel_shifted,
+            autoLevels=True,
+            autoRange=self.kernel_view.image.shape != kernel_shifted.shape,
+        )
 
         cx, cy = kernel_shifted.shape[0] // 2, kernel_shifted.shape[1] // 2
         self._kernel_x_curve.setData(
@@ -443,7 +474,4 @@ class ProbeKernelTab(QWidget):
             np.arange(kernel_shifted.shape[1]), kernel_shifted[cx, :]
         )
 
-        self.accept_button.setEnabled(True)
-
-    def accept(self):
-        self.window.probe_accepted(self.probe, self.alpha)
+        self.window.kernel_updated(self.probe, self.alpha)

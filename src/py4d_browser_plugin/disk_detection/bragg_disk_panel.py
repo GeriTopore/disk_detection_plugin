@@ -176,7 +176,13 @@ class BraggPreviewPane(QGroupBox):
             # relative to the main virtual image view, and get_scan_position
             # below (which mirrors the main window's own point-selector
             # reading convention) would read back the wrong (xc, yc).
-            self.rs_view.setImage(image.T, autoLevels=True, autoRange=True)
+            # Zoom is only reset when the shape changes, so refreshing on
+            # every kernel update doesn't undo the user's panning/zooming.
+            self.rs_view.setImage(
+                image.T,
+                autoLevels=True,
+                autoRange=self.rs_view.image.shape != image.T.shape,
+            )
 
     def set_marker_diameter(self, diameter):
         self.scatter.setSize(diameter)
@@ -220,7 +226,13 @@ class BraggPreviewPane(QGroupBox):
         self.scatter.setData(spots)
 
 
-class BraggDiskTab(QWidget):
+class BraggDiskPanel(QWidget):
+    """
+    Bragg disk detection controls. The panel itself is the controls column;
+    its preview panes live in `self.views`, for the window to lay out
+    alongside the probe/kernel views.
+    """
+
     # Start with a single preview pane; this caps how many more the user
     # can add via the "Add Preview Position" button.
     MAX_ADDITIONAL_PANES = 3
@@ -232,7 +244,7 @@ class BraggDiskTab(QWidget):
         self.panes = []
 
         self.settings_pane = BraggDiskSettingsPane()
-        self.settings_pane.connect_changed(self.on_detection_params_changed)
+        self.settings_pane.connect_changed(self._on_detection_params_changed)
 
         scaling_box = self._build_scaling_box()
 
@@ -245,31 +257,23 @@ class BraggDiskTab(QWidget):
         self.add_pane_button = QPushButton("Add Preview Position")
         self.add_pane_button.clicked.connect(self.add_pane)
 
-        # Off by default: previews only update when a point selector drag is
-        # released. When checked, previews also update continuously while
-        # dragging (can be too slow/jumpy to want on all the time).
-        self.live_update_checkbox = QCheckBox("Live Update While Dragging")
-        self.live_update_checkbox.setChecked(False)
+        # For applying detection parameter changes when live update is off.
+        self.update_previews_button = QPushButton("Update Previews")
+        self.update_previews_button.clicked.connect(lambda: self.update_previews())
 
-        left_layout = QVBoxLayout()
-        left_layout.addWidget(self.settings_pane)
-        left_layout.addWidget(scaling_box)
-        left_layout.addWidget(self.find_all_button)
-        left_layout.addWidget(self.find_all_progress)
-        left_layout.addWidget(self.add_pane_button)
-        left_layout.addWidget(self.live_update_checkbox)
-        left_layout.addStretch()
-        left_widget = QWidget()
-        left_widget.setLayout(left_layout)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.settings_pane)
+        layout.addWidget(scaling_box)
+        layout.addWidget(self.update_previews_button)
+        layout.addWidget(self.add_pane_button)
+        layout.addWidget(self.find_all_button)
+        layout.addWidget(self.find_all_progress)
+        self.setLayout(layout)
 
         self.previews_layout = QHBoxLayout()
-        previews_widget = QWidget()
-        previews_widget.setLayout(self.previews_layout)
-
-        layout = QHBoxLayout()
-        layout.addWidget(left_widget, 1)
-        layout.addWidget(previews_widget, 4)
-        self.setLayout(layout)
+        self.views = QWidget()
+        self.views.setLayout(self.previews_layout)
 
         self._append_pane()
 
@@ -320,7 +324,7 @@ class BraggDiskTab(QWidget):
         pane = BraggPreviewPane(f"Preview {len(self.panes) + 1}")
         # Always update once the drag is released. Also update continuously
         # during the drag (sigRegionChanged), but only if the user has
-        # opted into that via the "Live Update While Dragging" checkbox.
+        # opted into that via the "Live Update" checkbox.
         pane.rs_selector.sigRegionChangeFinished.connect(
             partial(self.update_previews, panes=[pane])
         )
@@ -343,10 +347,14 @@ class BraggDiskTab(QWidget):
         self._append_pane()
 
     def _on_pane_region_changed(self, pane, *_):
-        if self.live_update_checkbox.isChecked():
+        if self.window.is_live():
             self.update_previews(panes=[pane])
 
-    def on_probe_accepted(self):
+    def _on_detection_params_changed(self, *_):
+        if self.window.is_live():
+            self.on_detection_params_changed()
+
+    def on_kernel_updated(self):
         parent = self.window.parent
         vimg = parent.unscaled_realspace_image
         diameter = 2 * self.window.probe_radius
@@ -415,9 +423,7 @@ class BraggDiskTab(QWidget):
         parent = self.window.parent
         probe = self.window.probe
         if probe is None or parent.datacube is None:
-            parent.statusBar().showMessage(
-                "Generate/accept a probe kernel first!", 5_000
-            )
+            parent.statusBar().showMessage("Generate a probe kernel first!", 5_000)
             return
 
         params = self.settings_pane.get_params()
